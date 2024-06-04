@@ -1,8 +1,9 @@
 from torch.utils.cpp_extension import load
 import time
-bench_l2 = load(name="bench_l2", sources=["l2.cpp", "l2_partitions.cu"], extra_cuda_cflags=["-arch=sm_89", "--keep", "--keep-dir", "/workspace/benchmark/temp"], verbose=True)
+bench_l2 = load(name="bench_l2", sources=["l2.cpp", "l2_partitions.cu"], extra_cuda_cflags=["-arch=sm_89", "--keep", "--keep-dir", "/workspace/benchmarks/temp"], verbose=True)
 print(bench_l2)
-global_results, local_results = bench_l2.bench(0, 128, 128, 1)
+
+global_results, local_results = bench_l2.bench(0, 108, 128, 1)
 #print(global_results)
 
 summed_results = local_results.sum(axis=3).sum(axis=0) # sum b/w iterations and warps

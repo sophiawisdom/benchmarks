@@ -46,17 +46,19 @@ std::tuple<torch::Tensor, torch::Tensor> benchmark_entrypoint(
     int threads,
     int iterations
 ) {
-    assert(blocks == 128);
-    int out_size = 128 * 128 * 4; // per iteration
+    // assert(blocks == 128);
+    int out_size = blocks * blocks * 4; // per iteration
+
+    assert(threads == 128); // change the 4s
 
     int *cpu_outs;
     CUDA_CHECK(cudaMallocHost(&cpu_outs, roundUpToPageSize(iterations * out_size * sizeof(int))));
 
     auto options = torch::TensorOptions().dtype(torch::kInt32);
-    assert(blocks == 128);
+    // assert(blocks == 128);
     torch::Tensor out_tensor = torch::from_blob(
         cpu_outs,
-        {iterations, 128, 128, 4}, {128*128*4, 128*4, 4, 1}, // shape/stride
+        {iterations, blocks, blocks, 4}, {blocks*blocks*4, blocks*4, 4, 1}, // shape/stride
         [](void* ptr) { // deleter
             cudaFreeHost(ptr);
         },

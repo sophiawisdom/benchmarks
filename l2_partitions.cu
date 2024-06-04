@@ -108,6 +108,10 @@ __global__ void l2_bench_gpu(int *scratchpad, int *outs, int *l2_scratchpad) {
     curand_init(threadIdx.x, 0, 0, &state);
     int smid;
     asm("mov.u32 %0, %smid;" : "=r"(smid));
+    int nsmid;
+    asm("mov.u32 %0, %nsmid;" : "=r"(nsmid));
+
+    assert(nsmid == gridDim.x);
 
     __shared__ unsigned int x[128];
     // assert(blockDim.x == 128);
@@ -119,13 +123,14 @@ __global__ void l2_bench_gpu(int *scratchpad, int *outs, int *l2_scratchpad) {
     no_ticktok_sync(scratchpad);
     // if (threadIdx.x == 0) {printf("block %d exited second sync %d %d %d %d %d %d\n", blockIdx.x, load_volatile(&scratchpad[0]), load_volatile(&scratchpad[1]), load_volatile(&scratchpad[2]), load_volatile(&scratchpad[3]), load_volatile(&scratchpad[4]), load_volatile(&scratchpad[5]));}
 
-    for (int other_sm = 0; other_sm < 128; other_sm++) {
+    for (int other_sm = 0; other_sm < gridDim.x; other_sm++) {
         // if (blockIdx.x == 0 && threadIdx.x == 0) {printf("smid %d at other %d\n", smid, other_sm);}
         int tidx = (threadIdx.x%32);
-        void *new_scratchpad = (void *)&scratchpad[128 + smid*32]; // per-sm cacheline
-        void *other_sm_scratchpad = new_scratchpad+other_sm*128+tidx*4;
+        void *base_scratchpad = ((void *)&scratchpad[128]); // per-sm cacheline
+        void *new_scratchpad = base_scratchpad+8192*smid; // per-sm cacheline
+        void *other_sm_scratchpad = base_scratchpad+8192*other_sm+tidx*4;
 
-        for (int look_sm = 0; look_sm < 128; look_sm++) {
+        for (int look_sm = 0; look_sm < gridDim.x; look_sm++) {
             trash_l2(l2_scratchpad, state);
             asm volatile("st.cg.global.u32 [%0], %1;" :: "l"(new_scratchpad+((threadIdx.x)%32)*4), "r"(curand(&state)));
 
@@ -139,6 +144,7 @@ __global__ void l2_bench_gpu(int *scratchpad, int *outs, int *l2_scratchpad) {
             }
 
             // if (blockIdx.x == 0 && threadIdx.x == 0) {printf("smid %d entered global sync %d/%d\n", smid, other_sm, look_sm);}
+            __nanosleep(50000);
             no_ticktok_sync(scratchpad);
             // if (blockIdx.x == 0 && threadIdx.x == 0) {printf("smid %d exited global sync %d/%d\n", smid, other_sm, look_sm);}
 
@@ -160,13 +166,14 @@ __global__ void l2_bench_gpu(int *scratchpad, int *outs, int *l2_scratchpad) {
                     unsigned int small_end = end;
 
                     int diff = (small_end - small_start);
-                    int idx = smid * 128 * 4 + other_sm * 4 + threadIdx.x/32;
+                    int idx = smid * gridDim.x * 4 + other_sm * 4 + threadIdx.x/32;
 
                     outs[idx] = diff;
                 }
                 __syncthreads();
             }
 
+            __nanosleep(50000);
             no_ticktok_sync(scratchpad);
         }
     }
@@ -204,8 +211,8 @@ float *bench_l2(
     CUDA_CHECK(cudaMalloc(&l2_scratchpad, l2_scratchpad_size));
 
     int *gpu_outs;
-    assert(blocks == 128);
-    int out_size = 128 * 128 * 4; // per iteration
+    // assert(blocks == 128);
+    int out_size = blocks * blocks * 4; // per iteration
     CUDA_CHECK(cudaMalloc(&gpu_outs, sizeof(int) * out_size));
     CUDA_CHECK(cudaMemset(gpu_outs, 0, sizeof(int) * out_size));
 
@@ -264,7 +271,7 @@ float *bench_l2(
         CUDA_CHECK(cudaEventElapsedTime(&diffs[i], starts[i], ends[i]));
     }
 
-    cudaGraphDebugDotPrint(graph, "/workspace/benchmark/graph.dot", 0);
+    // cudaGraphDebugDotPrint(graph, "/workspace/benchmarks/graph.dot", 0);
 
     return diffs;
 }

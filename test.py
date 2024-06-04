@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 from collections import defaultdict
 
-bench = load(name="bench", sources=["file.cpp", "bench_shared.cu", "bench_global.cu"], extra_cuda_cflags=["--keep", "--keep-dir", "/workspace/benchmark/temp", "--extended-lambda"], verbose=True)
+bench = load(name="bench", sources=["file.cpp", "bench_shared.cu", "bench_global.cu"], extra_cuda_cflags=["--keep", "--keep-dir", "/workspace/benchmarks/temp", "--extended-lambda"], verbose=True)
 
 outs = torch.zeros((1024*32), dtype=torch.int32, device="cuda")
 
