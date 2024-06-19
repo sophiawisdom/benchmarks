@@ -1,3 +1,6 @@
 temp/
 *.dot
 *.png
+build/
+dist/
+*.egg-info/

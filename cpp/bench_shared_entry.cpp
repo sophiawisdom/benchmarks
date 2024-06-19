@@ -30,9 +30,9 @@ int benchmark_entrypoint(int dtype,
     CHECK_INPUT(outs);
 
     assert(outs.dtype() == torch::kInt32);
-    return bench_host((int *)outs.data_ptr(), op, shmem_size, threads, dtype, strat);
+    return bench_shared((int *)outs.data_ptr(), op, shmem_size, threads, dtype, strat);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("bench", &benchmark_entrypoint, "cuda bench");
+  m.def("bench_shared", &benchmark_entrypoint, "cuda bench");
 }

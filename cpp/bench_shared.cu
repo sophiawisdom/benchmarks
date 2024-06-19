@@ -20,6 +20,8 @@ enum Operation {
     EXCH,
     MUL,
     MANUAL_ADD,
+    MANUAL_MAX,
+    MANUAL_DONOTHING,
     ADD_NOCHANGE,
     ADD_WARPCOALESCED
 };
@@ -97,16 +99,27 @@ if constexpr (std::is_same<dtype, float>::value) {\
 
 template<typename dtype>
 __device__ __forceinline__ dtype sophiaAtomicMul(dtype *loc, dtype val) {
-    ATOMIC_OP_GENERAL(loc, val, [] __device__ (dtype a, dtype b) { return a * b; });
+    ATOMIC_OP_GENERAL(loc, val, [] __device__ (dtype a, dtype b) { return a*b; });
 }
 
 template<typename dtype>
 __device__ __forceinline__ dtype sophiaManualAtomicAdd(dtype *loc, dtype val) {
-    ATOMIC_OP_GENERAL(loc, val, [] __device__ (dtype a, dtype b) { return a + b; });
+    ATOMIC_OP_GENERAL(loc, val, [] __device__ (dtype a, dtype b) { return a+b; });
+}
+
+template<typename dtype>
+__device__ __forceinline__ dtype sophiaManualAtomicMax(dtype *loc, dtype val) {
+    ATOMIC_OP_GENERAL(loc, val, [] __device__ (dtype a, dtype b) { return max(a, b); });
+}
+
+template<typename dtype>
+__device__ __forceinline__ dtype sophiaManualDoNothing(dtype *loc, dtype val) {
+    ATOMIC_OP_GENERAL(loc, val, [] __device__ (dtype a, dtype b) { return a; });
 }
 
 template<typename dtype, int shmem_size>
 __device__ __forceinline__ void warpcoalesced_add(dtype *out, dtype rand) {
+#if __CUDA_ARCH__ >= 800 // redux is only supported on sm_80+
     if constexpr(std::is_same<dtype, unsigned int>::value) {
         if constexpr (shmem_size == 1) {
             unsigned int result;
@@ -128,14 +141,11 @@ __device__ __forceinline__ void warpcoalesced_add(dtype *out, dtype rand) {
             }
         } else {
             unsigned int sum = rand;
-            if constexpr (shmem_size == 4) {
+            if constexpr (shmem_size <= 4) {
                 sum += __shfl_xor_sync(0xffffffff, sum, 4);
+            } else if constexpr (shmem_size <= 8) {
                 sum += __shfl_xor_sync(0xffffffff, sum, 8);
-                sum += __shfl_xor_sync(0xffffffff, sum, 16);
-            } else if constexpr (shmem_size == 8) {
-                sum += __shfl_xor_sync(0xffffffff, sum, 8);
-                sum += __shfl_xor_sync(0xffffffff, sum, 16);
-            } else if constexpr (shmem_size == 16) {
+            } else if constexpr (shmem_size <= 16) {
                 sum += __shfl_xor_sync(0xffffffff, sum, 16);
             }
 
@@ -143,38 +153,30 @@ __device__ __forceinline__ void warpcoalesced_add(dtype *out, dtype rand) {
                 atomicAdd(out, sum);
             }
         }
-    } else if constexpr (std::is_same<dtype, float>::value) {
-        float sum = rand;
-        if constexpr (shmem_size == 1) {
-            sum += __shfl_xor_sync(0xffffffff, sum, 1);
-            sum += __shfl_xor_sync(0xffffffff, sum, 2);
-            sum += __shfl_xor_sync(0xffffffff, sum, 4);
-            sum += __shfl_xor_sync(0xffffffff, sum, 8);
-            sum += __shfl_xor_sync(0xffffffff, sum, 16);
-        } else if constexpr (shmem_size == 2) {
-            sum += __shfl_xor_sync(0xffffffff, sum, 2);
-            sum += __shfl_xor_sync(0xffffffff, sum, 4);
-            sum += __shfl_xor_sync(0xffffffff, sum, 8);
-            sum += __shfl_xor_sync(0xffffffff, sum, 16);
-        } else if constexpr (shmem_size == 4) {
-            sum += __shfl_xor_sync(0xffffffff, sum, 4);
-            sum += __shfl_xor_sync(0xffffffff, sum, 8);
-            sum += __shfl_xor_sync(0xffffffff, sum, 16);
-        } else if constexpr (shmem_size == 8) {
-            sum += __shfl_xor_sync(0xffffffff, sum, 8);
-            sum += __shfl_xor_sync(0xffffffff, sum, 16);
-        } else if constexpr (shmem_size == 16) {
-            sum += __shfl_xor_sync(0xffffffff, sum, 16);
-        }
+        return;
+    }
+#endif
 
-        if ((threadIdx.x % 32) < shmem_size) {
-            atomicAdd(out, sum);
-        }
+    float sum = rand;
+    if constexpr (shmem_size == 1) {
+        sum += __shfl_xor_sync(0xffffffff, sum, 1);
+    } else if constexpr (shmem_size <= 2) {
+        sum += __shfl_xor_sync(0xffffffff, sum, 2);
+    } else if constexpr (shmem_size <= 4) {
+        sum += __shfl_xor_sync(0xffffffff, sum, 4);
+    } else if constexpr (shmem_size <= 8) {
+        sum += __shfl_xor_sync(0xffffffff, sum, 8);
+    } else if constexpr (shmem_size <= 16) {
+        sum += __shfl_xor_sync(0xffffffff, sum, 16);
+    }
+
+    if ((threadIdx.x % 32) < shmem_size) {
+        atomicAdd(out, sum);
     }
 }
 
 
-template<typename dtype, Operation op, Strategy strat, int const_shmem_size>
+template<typename dtype, Operation op, int strat, int const_shmem_size>
 __global__ void bench(int *outs, int shmem_size) {
     __shared__ dtype data[1024];
 
@@ -187,25 +189,57 @@ __global__ void bench(int *outs, int shmem_size) {
             data[i] = __floats2half2_rn(0, 0);
         } else if constexpr (op == ADD_NOCHANGE) {
             data[i] = INFINITY; // improves speed significantly
+        } else if constexpr (op == MUL) {
+            data[i] = 1;
         } else {
             data[i] = 0;
         }
     }
     int our_index = threadIdx.x % shmem_size;
-    if constexpr (strat == RAND) {
-        our_index = curand(&state) % shmem_size;
+
+    constexpr int rand_val_cache_size = 4;
+    dtype cache[rand_val_cache_size];
+    if constexpr (std::is_same<dtype, float>::value) {
+        for (int i = 0; i < rand_val_cache_size; i++) {
+            cache[i] = curand_uniform(&state);
+        }
+    }
+    constexpr int index_cache_size = 16;
+    int index_cache[index_cache_size];
+    for (int i = 0; i < index_cache_size; i++) {
+        index_cache[i] = curand(&state) % shmem_size;
     }
 
     __syncthreads();
 
     unsigned int start;
     asm volatile("mov.u32 %0, %clock;" : "=r"(start));
+    __syncthreads();
 
+    #pragma unroll index_cache_size
     for (int i = 0; i < 512; i++) {
-        int rand_val = (op == INC) ? 1 : 15; // curand(&state);
-        dtype rand = curand_cast<dtype>(rand_val);
-        if constexpr (op == ADD || op == INC || op == ADD_NOCHANGE) {
+        int our_index = (threadIdx.x+i) % shmem_size;
+        if constexpr (strat == RAND) {
+            our_index = index_cache[i]; // curand(&state) % shmem_size;
+        }
+
+        int rand_val = 2;
+        if constexpr (op == INC) {
+            rand_val = 1;
+        }
+
+        dtype rand = curand(&state); // curand_cast<dtype>(rand_val);
+        if constexpr (std::is_same<dtype, float>::value) {
+            rand = cache[i%64];
+            if ((i & 64) == 0) {
+                data[threadIdx.x % shmem_size] = 1;
+            }
+        }
+
+        if constexpr (op == ADD || op == ADD_NOCHANGE) {
             atomicAdd(&data[our_index], rand);
+        } else if constexpr (op == INC) {
+            atomicAdd(&data[our_index], 1);
         } else if constexpr (op == MAX && (std::is_same<dtype, unsigned int>::value || std::is_same<dtype, unsigned long long>::value)) {
             atomicMax(&data[our_index], rand);
         } else if constexpr (op == MAX && (std::is_same<dtype, float>::value)) {
@@ -220,10 +254,16 @@ __global__ void bench(int *outs, int shmem_size) {
             sophiaAtomicMul<dtype>(&data[our_index], rand);
         } else if constexpr (op == MANUAL_ADD) {
             sophiaManualAtomicAdd<dtype>(&data[our_index], rand);
+        } else if constexpr (op == MANUAL_MAX) {
+            sophiaManualAtomicMax<dtype>(&data[our_index], rand);
+        } else if constexpr (op == MANUAL_DONOTHING) {
+            sophiaManualDoNothing<dtype>(&data[our_index], rand);
         } else if constexpr (op == ADD_WARPCOALESCED) {
             static_assert(strat == TIDX);
             warpcoalesced_add<dtype, const_shmem_size>(&data[our_index], rand);
         }
+
+        __syncwarp();
     }
 
     unsigned int end;
@@ -256,9 +296,9 @@ int bench_shared(
 
     #define ASSIGN_KERNEL(DTYPE, TYPE_ID, OP) if (dtype == TYPE_ID && op == OP) {\
         if (strat == 0) {\
-            kernel = &bench<DTYPE, OP, TIDX, 0>;\
+            /*kernel = &bench<DTYPE, OP, 0, 0>;*/\
         } else if (strat == 1) {\
-            kernel = &bench<DTYPE, OP, RAND, 0>;\
+            kernel = &bench<DTYPE, OP, 1, 0>;\
         }\
     }
 
@@ -266,7 +306,7 @@ int bench_shared(
     ASSIGN_KERNEL(float, 0, ADD);
     ASSIGN_KERNEL(double, 3, ADD);
     ASSIGN_KERNEL(unsigned long long, 4, ADD);
-    ASSIGN_KERNEL(__half2, 2, ADD);
+    // ASSIGN_KERNEL(__half2, 2, ADD);
 
     ASSIGN_KERNEL(unsigned int, 1, INC);
 
@@ -293,6 +333,11 @@ int bench_shared(
     ASSIGN_KERNEL(double, 3, MANUAL_ADD);
     ASSIGN_KERNEL(unsigned long long, 4, MANUAL_ADD);
 
+    ASSIGN_KERNEL(unsigned int, 1, MANUAL_MAX);
+    ASSIGN_KERNEL(float, 0, MANUAL_MAX);
+
+    ASSIGN_KERNEL(unsigned int, 1, MANUAL_DONOTHING);
+
     ASSIGN_KERNEL(float, 0, ADD_NOCHANGE);
     ASSIGN_KERNEL(double, 3, ADD_NOCHANGE);
 
@@ -312,8 +357,13 @@ int bench_shared(
         return 1;
     }
 
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, 0);
+
+    // printf("#sms: %d\n", deviceProp.multiProcessorCount);
+
     if (kernel) {
-        kernel<<<128, threads>>>(outs, shmem_size);
+        kernel<<<deviceProp.multiProcessorCount, threads>>>(outs, shmem_size);
         return 0;
     } else {
         printf("RUNNING NOTHING for op=%d dtype=%d\n", op, dtype);

@@ -1,4 +1,7 @@
+#include <stdio.h>
 
+#include "cuda_fp16.h"
+#include "cuda_bf16.h"
 
 // shared b/w bench_global and bench_shared
 enum Operation {
@@ -44,6 +47,7 @@ __device__ __forceinline__ dtype curand_cast(int val) {
 template<typename dtype, Operation op>
 __global__ void bench(void *scratchpad, int *outs) {
     // TODO: CONSIDER SMID split-l2
+    return;
 }
 
 
@@ -52,10 +56,10 @@ int bench_global(
     int op_arg,
     int blocks,
     int threads,
-    int dtype,
+    int dtype
 ) {
     Operation op = (Operation)op_arg;
-    using kernel_ptr = void(*)(int*, int);
+    using kernel_ptr = void(*)(void*, int*);
     kernel_ptr kernel = nullptr;
 
     void *scratchpad;
@@ -63,12 +67,6 @@ int bench_global(
     cudaMemset(scratchpad, 0, 16384);
 
     #define ASSIGN_KERNEL(DTYPE, TYPE_ID, OP) if (dtype == TYPE_ID && op == OP) {kernel = &bench<DTYPE, OP>;}
-
-    ASSIGN_KERNEL(float, 0, ADD);
-    ASSIGN_KERNEL(unsigned int, 1, ADD);
-    ASSIGN_KERNEL(__half2, 2, ADD);
-    ASSIGN_KERNEL(double, 3, ADD);
-    ASSIGN_KERNEL(unsigned long long, 4, ADD);
 
     if (kernel) {
         kernel<<<blocks, 128>>>(scratchpad, outs);

@@ -86,5 +86,5 @@ std::tuple<torch::Tensor, torch::Tensor> benchmark_entrypoint(
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("bench", &benchmark_entrypoint, "cuda bench");
+  m.def("bench_l2", &benchmark_entrypoint, "cuda bench");
 }

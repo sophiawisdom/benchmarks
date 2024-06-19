@@ -37,6 +37,7 @@ __device__ __forceinline__  int store_volatile(int *ptr, int value) {
     asm volatile("st.relaxed.gpu.global.s32 [%0], %1;" :: "l"(ptr), "r"(value));
 }
 __device__ __forceinline__ void no_ticktok_sync(int *scratchpad) {
+    __syncthreads();
     if (threadIdx.x == 0) {
         while (load_volatile(&scratchpad[1])) {} // wait for previous sync to complete
         int res = atomicAdd(&scratchpad[0], 1); // start counting # of arrived blocks
@@ -46,41 +47,6 @@ __device__ __forceinline__ void no_ticktok_sync(int *scratchpad) {
         while (!load_volatile(&scratchpad[1])) {} // wait until completion
         if (atomicSub(&scratchpad[0], 1) == 1) { // check if we're the last block
             store_volatile(&scratchpad[1], 0); // if we are, reset completion marker
-        }
-    }
-    __syncthreads();
-}
-
-
-template<TickTock tt>
-__device__ __forceinline__ void global_sync(int *scratchpad) {
-    __syncthreads();
-    if (threadIdx.x == 0) {
-        if constexpr (tt == Tick) {
-            // scratchpad[1]?
-            while (load_volatile(&scratchpad[4])) {}
-            int res = atomicAdd(&scratchpad[0], 1);
-            if (res == (gridDim.x-1)) {
-                store_volatile(&scratchpad[1], 1);
-            }
-            while (!load_volatile(&scratchpad[1])) {}
-            if (atomicSub(&scratchpad[0], 1) == 1) {
-                store_volatile(&scratchpad[0], 0);
-                store_volatile(&scratchpad[1], 0);
-                store_volatile(&scratchpad[2], 0);
-            }
-        } else {
-            while (load_volatile(&scratchpad[1])) {}
-            int res = atomicAdd(&scratchpad[3], 1);
-            if (res == (gridDim.x-1)) {
-                store_volatile(&scratchpad[4], 1);
-            }
-            while (!load_volatile(&scratchpad[4])) {}
-            if (atomicSub(&scratchpad[3], 1) == 1) {
-                store_volatile(&scratchpad[3], 0);
-                store_volatile(&scratchpad[4], 0);
-                store_volatile(&scratchpad[5], 0);
-            }
         }
     }
     __syncthreads();
